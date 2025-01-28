@@ -12,144 +12,108 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class AlbumForwarder:
+class ForwarderBot:
     def __init__(self):
+        self.bot_token = "7815230273:AAGMwu78JgS88yO8OSi_kIW9D2OQw3yR4Q4"
+        self.source_id = -1002438877384
+        self.dest_id = -1002382776169
         self.media_groups = {}
         self.lock = asyncio.Lock()
-        self.base_wait = 4.0  # Initial collection window (seconds)
-        self.max_wait = 6.0   # Maximum collection time
-        self.send_interval = 0.08  # Delay between forwards
+        self.group_delay = 2.5  # Time to wait for album completion
+        self.port = int(os.environ.get("PORT", 5000))
 
-    async def handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            if not update.channel_post:
-                return
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not (update.channel_post and update.channel_post.chat.id == self.source_id):
+            return
 
-            message = update.channel_post
-            source_id = int(os.environ['SOURCE_ID'])
-            
-            if message.chat.id != source_id:
-                return
+        msg = update.channel_post
+        media_group_id = msg.media_group_id
 
-            if message.media_group_id:
-                await self.process_album(message, context)
-            else:
-                await self.forward_single(message, context)
-
-        except Exception as e:
-            logger.error(f"Error handling update: {str(e)}")
-
-    async def process_album(self, message, context):
-        media_group_id = message.media_group_id
-        async with self.lock:
-            entry = self.media_groups.get(media_group_id)
-            
-            if not entry:
-                # New album detected - start tracking
-                self.media_groups[media_group_id] = {
-                    'messages': [message],
-                    'task': asyncio.create_task(
-                        self.handle_album(media_group_id, context)
-                    ),
-                    'last_update': asyncio.get_event_loop().time()
-                }
-                logger.debug(f"New album detected: {media_group_id}")
-            else:
-                # Update existing album
-                entry['messages'].append(message)
-                entry['last_update'] = asyncio.get_event_loop().time()
-                logger.debug(f"Updated album {media_group_id} ({len(entry['messages'])} items)")
-
-    async def handle_album(self, media_group_id, context):
-        """Main album handling coroutine with dynamic waiting"""
-        start_time = asyncio.get_event_loop().time()
-        
-        while True:
+        if media_group_id:
             async with self.lock:
-                entry = self.media_groups.get(media_group_id)
-                if not entry:
-                    return
+                if media_group_id not in self.media_groups:
+                    self.media_groups[media_group_id] = {
+                        'messages': [],
+                        'task': asyncio.create_task(
+                            self.process_media_group(media_group_id, context)
+                        )
+                    }
+                self.media_groups[media_group_id]['messages'].append(msg)
+        else:
+            await self.forward_single(msg, context)
 
-                elapsed = asyncio.get_event_loop().time() - start_time
-                inactive_time = asyncio.get_event_loop().time() - entry['last_update']
+    async def process_media_group(self, group_id: str, context: ContextTypes.DEFAULT_TYPE):
+        await asyncio.sleep(self.group_delay)
+        
+        async with self.lock:
+            if group_id not in self.media_groups:
+                return
 
-                # Check termination conditions
-                if elapsed >= self.max_wait or inactive_time >= self.base_wait:
-                    messages = sorted(entry['messages'], key=lambda x: x.message_id)
-                    del self.media_groups[media_group_id]
-                    break
+            messages = sorted(
+                self.media_groups[group_id]['messages'],
+                key=lambda x: x.message_id
+            )
 
-            await asyncio.sleep(0.5)  # Check every 500ms
-
-        # Forward collected messages
-        try:
-            logger.info(f"Forwarding album {media_group_id} ({len(messages)} items)")
-            for idx, msg in enumerate(messages):
-                await context.bot.forward_message(
-                    chat_id=int(os.environ['TARGET_ID']),
-                    from_chat_id=int(os.environ['SOURCE_ID']),
-                    message_id=msg.message_id
-                )
-                if idx < len(messages) - 1:
-                    await asyncio.sleep(self.send_interval)
-            
-            logger.info(f"Successfully forwarded album {media_group_id}")
-        except Exception as e:
-            logger.error(f"Album forwarding failed: {str(e)}")
+            try:
+                # Forward messages in quick succession
+                for msg in messages:
+                    await context.bot.forward_message(
+                        chat_id=self.dest_id,
+                        from_chat_id=self.source_id,
+                        message_id=msg.message_id
+                    )
+                    await asyncio.sleep(0.1)  # Maintain order and grouping
+                
+                logger.info(f"Forwarded album with {len(messages)} items")
+            except Exception as e:
+                logger.error(f"Album error: {e}")
+            finally:
+                del self.media_groups[group_id]
 
     async def forward_single(self, message, context):
         try:
             await context.bot.forward_message(
-                chat_id=int(os.environ['TARGET_ID']),
-                from_chat_id=int(os.environ['SOURCE_ID']),
+                chat_id=self.dest_id,
+                from_chat_id=self.source_id,
                 message_id=message.message_id
             )
-            logger.info("Forwarded single message")
         except Exception as e:
-            logger.error(f"Single message error: {str(e)}")
+            logger.error(f"Forward error: {e}")
 
-async def web_server():
-    app = web.Application()
-    app.router.add_get('/', lambda _: web.Response(text="OK"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 10000)))
-    await site.start()
-    logger.info("Web server started")
-    return app
+    async def web_server(self):
+        app = web.Application()
+        app.router.add_get("/", self.health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", self.port)
+        await site.start()
+        return runner
 
-async def main():
-    # Validate environment
-    required_vars = ['BOT_TOKEN', 'SOURCE_ID', 'TARGET_ID']
-    missing = [v for v in required_vars if not os.environ.get(v)]
-    if missing:
-        logger.critical(f"Missing variables: {', '.join(missing)}")
-        return
+    async def health_check(self, request):
+        return web.Response(text="Bot is operational")
 
-    # Initialize components
-    forwarder = AlbumForwarder()
-    await web_server()
-
-    # Start Telegram bot
-    application = ApplicationBuilder() \
-        .token(os.environ['BOT_TOKEN']) \
-        .post_init(lambda _: logger.info("Bot initialized")) \
-        .build()
-
-    application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
-    
-    await application.initialize()
-    await application.start()
-    logger.info("Bot started polling")
-    
-    # Keep alive
-    while True:
-        await asyncio.sleep(3600)
+    async def run(self):
+        # Start web server
+        await self.web_server()
+        
+        # Initialize Telegram bot
+        application = ApplicationBuilder().token(self.bot_token).build()
+        application.add_handler(MessageHandler(filters.ALL, self.handle_message))
+        
+        await application.initialize()
+        await application.start()
+        logger.info("Bot started successfully")
+        
+        # Keep running
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == '__main__':
+    bot = ForwarderBot()
+    
     try:
-        asyncio.run(main())
+        asyncio.run(bot.run())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped")
     except Exception as e:
-        logger.critical(f"Critical failure: {str(e)}")
+        logger.error(f"Fatal error: {e}")
