@@ -18,8 +18,8 @@ class BotServer:
         self.lock = asyncio.Lock()
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        source_id = -1002438877384 # Your source channel ID
-        dest_id = -1002382776169    # Your destination channel ID
+        source_id = -1002438877384  # Your source channel ID
+        dest_id = -1002382776169   # Your destination channel ID
 
         if not (update.channel_post and update.channel_post.chat.id == source_id):
             return
