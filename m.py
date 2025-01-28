@@ -94,7 +94,7 @@ class BotServer:
         await self.web_server()
         
         # Start Telegram bot
-        application = ApplicationBuilder().token(os.environ.get("7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0")).build()
+        application = ApplicationBuilder().token(os.environ.get("BOT_TOKEN")).build()
         application.add_handler(MessageHandler(filters.ALL, self.handle_message))
         
         await application.initialize()
