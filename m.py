@@ -79,39 +79,28 @@ class MediaGroupForwarder:
         except Exception as e:
             logging.error(f"Forward error: {e}")
 
-async def handle_health_check(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    # Simple HTTP response for Render's health checks
-    response = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 2\r\n"
-        "\r\n"
-        "OK"
-    )
-    writer.write(response.encode())
+# Simple HTTP handler for Render health checks
+async def handle_http_request(reader, writer):
+    request = await reader.read(1024)
+    writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK')
     await writer.drain()
     writer.close()
-    await writer.wait_closed()
 
-async def main():
-    # Get port from Render environment variable
+async def run_http_server():
     port = int(os.environ.get("PORT", 8000))
-    
-    # Start health check server
-    server = await asyncio.start_server(handle_health_check, "0.0.0.0", port)
-    logging.info(f"Health check server running on port {port}")
-
-    # Start Telegram bot
-    forwarder = MediaGroupForwarder()
-    application = ApplicationBuilder().token(os.environ.get("TELEGRAM_TOKEN")).build()
-    application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
-
-    # Run both services concurrently
+    server = await asyncio.start_server(handle_http_request, '0.0.0.0', port)
     async with server:
-        await asyncio.gather(
-            server.serve_forever(),
-            application.run_polling()
-        )
+        await server.serve_forever()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    forwarder = MediaGroupForwarder()
+    
+    application = ApplicationBuilder().token('7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0').build()
+    application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
+    
+    # Start HTTP server in the background
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_http_server())
+    
+    # Start the bot
+    application.run_polling()
