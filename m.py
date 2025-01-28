@@ -3,21 +3,19 @@ import asyncio
 import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from aiohttp import web
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-class BotServer:
+class MediaGroupForwarder:
     def __init__(self):
-        self.port = int(os.environ.get("PORT", 5000))
-        self.app = None
         self.media_groups = {}
         self.lock = asyncio.Lock()
+        self.delay = 2.5  # Adjust based on network latency
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         source_id = -1002438877384  # Your source channel ID
         dest_id = -1002382776169   # Your destination channel ID
 
@@ -44,7 +42,7 @@ class BotServer:
 
     async def process_group(self, group_id: str, context: ContextTypes.DEFAULT_TYPE, 
                           source_id: int, dest_id: int):
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(self.delay)
         
         async with self.lock:
             if group_id not in self.media_groups:
@@ -57,11 +55,15 @@ class BotServer:
 
             try:
                 message_ids = [m.message_id for m in messages]
+                
+                # Batch forward using Telegram's bulk forwarding
                 await context.bot.forward_messages(
                     chat_id=dest_id,
                     from_chat_id=source_id,
                     message_ids=message_ids
                 )
+                
+                logging.info(f"Forwarded media group {group_id} with {len(message_ids)} items")
             except Exception as e:
                 logging.error(f"Media group error: {e}")
             finally:
@@ -77,34 +79,39 @@ class BotServer:
         except Exception as e:
             logging.error(f"Forward error: {e}")
 
-    async def web_server(self):
-        app = web.Application()
-        app.router.add_get("/", self.health_check)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", self.port)
-        await site.start()
-        return app
+async def handle_health_check(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    # Simple HTTP response for Render's health checks
+    response = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 2\r\n"
+        "\r\n"
+        "OK"
+    )
+    writer.write(response.encode())
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
 
-    async def health_check(self, request):
-        return web.Response(text="Bot is running")
+async def main():
+    # Get port from Render environment variable
+    port = int(os.environ.get("PORT", 8000))
+    
+    # Start health check server
+    server = await asyncio.start_server(handle_health_check, "0.0.0.0", port)
+    logging.info(f"Health check server running on port {port}")
 
-    async def start(self):
-        # Start web server
-        await self.web_server()
-        
-        # Start Telegram bot
-        application = ApplicationBuilder().token(os.environ.get("BOT_TOKEN")).build()
-        application.add_handler(MessageHandler(filters.ALL, self.handle_message))
-        
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
+    # Start Telegram bot
+    forwarder = MediaGroupForwarder()
+    application = ApplicationBuilder().token(os.environ.get("TELEGRAM_TOKEN")).build()
+    application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
 
-        logging.info("Bot started successfully")
+    # Run both services concurrently
+    async with server:
+        await asyncio.gather(
+            server.serve_forever(),
+            application.run_polling()
+        )
 
 if __name__ == '__main__':
-    bot_server = BotServer()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(bot_server.start())
-    loop.run_forever()
+    asyncio.run(main())
