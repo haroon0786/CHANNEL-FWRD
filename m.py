@@ -20,7 +20,7 @@ class BotServer:
 
     async def handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            source_id = -1001859547091, -1002438877384  # Replace with your source channel ID
+            source_id = -1002438877384  # Replace with your source channel ID
             dest_id = -1002382776169    # Replace with destination channel ID
 
             if not (update.channel_post and update.channel_post.chat.id == source_id):
