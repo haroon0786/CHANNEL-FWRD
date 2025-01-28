@@ -101,11 +101,23 @@ async def main():
     application = ApplicationBuilder().token('7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0').build()
     application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
     
-    # Run both the HTTP server and the bot concurrently
+    # Initialize the bot
+    await application.initialize()
+    await application.start()
+    
+    # Start the HTTP server and bot updater concurrently
     await asyncio.gather(
         run_http_server(),
-        application.run_polling()
+        application.updater.start_polling()
     )
 
+    # Keep the script running
+    await asyncio.Event().wait()
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot stopped by user")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
