@@ -79,34 +79,38 @@ class MediaGroupForwarder:
         except Exception as e:
             logging.error(f"Forward error: {e}")
 
-async def http_server():
-    """HTTP server for Render health checks"""
+# Simple HTTP handler for Render health checks
+async def health_check_server():
     async def handler(reader, writer):
         data = await reader.read(1024)
         writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK')
         await writer.drain()
         writer.close()
-
+    
     port = int(os.environ.get("PORT", 8000))
     server = await asyncio.start_server(handler, '0.0.0.0', port)
     async with server:
         await server.serve_forever()
 
 async def main():
+    # Initialize components
     forwarder = MediaGroupForwarder()
-    
-    # Initialize Telegram bot
     application = ApplicationBuilder().token('7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0').build()
     application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
-    
-    # Start both HTTP server and Telegram bot
-    await asyncio.gather(
-        application.run_polling(),
-        http_server()
-    )
+
+    # Create tasks for both bot and health check server
+    bot_task = asyncio.create_task(application.run_polling())
+    server_task = asyncio.create_task(health_check_server())
+
+    # Run both tasks concurrently
+    await asyncio.gather(bot_task, server_task)
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Bot stopped by user")
+        logging.info("Bot shutdown requested")
+    except Exception as e:
+        logging.error(f"Fatal error: {e}")
+    finally:
+        logging.info("Application shutdown complete")
