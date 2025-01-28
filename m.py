@@ -18,8 +18,8 @@ class BotServer:
         self.lock = asyncio.Lock()
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        source_id = -1001234567890  # Your source channel ID
-        dest_id = -1000987654321    # Your destination channel ID
+        source_id = -1001859547091  # Your source channel ID
+        dest_id = -1002382776169   # Your destination channel ID
 
         if not (update.channel_post and update.channel_post.chat.id == source_id):
             return
@@ -94,7 +94,7 @@ class BotServer:
         await self.web_server()
         
         # Start Telegram bot
-        application = ApplicationBuilder().token(os.environ.get("BOT_TOKEN")).build()
+        application = ApplicationBuilder().token(os.environ.get("7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0")).build()
         application.add_handler(MessageHandler(filters.ALL, self.handle_message))
         
         await application.initialize()
