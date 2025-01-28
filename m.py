@@ -5,140 +5,122 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from aiohttp import web
 
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-class BotServer:
+class MediaGroupManager:
     def __init__(self):
-        self.port = int(os.environ.get("PORT", 10000))
         self.media_groups = {}
         self.lock = asyncio.Lock()
-        self.delay = 2.5
+        self.MEDIA_GROUP_DELAY = 2.5  # Seconds to wait for album completion
 
-    async def handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            source_id = -1002438877384  # Replace with your source channel ID
-            dest_id = -1002382776169    # Replace with destination channel ID
+    async def handle_media_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message = update.channel_post
+        media_group_id = message.media_group_id
 
-            if not (update.channel_post and update.channel_post.chat.id == source_id):
-                return
+        async with self.lock:
+            if media_group_id not in self.media_groups:
+                self.media_groups[media_group_id] = {
+                    'messages': [],
+                    'task': asyncio.create_task(self.process_media_group(media_group_id, context))
+                }
+            self.media_groups[media_group_id]['messages'].append(message)
 
-            msg = update.channel_post
-            media_group_id = msg.media_group_id
-
-            if media_group_id:
-                async with self.lock:
-                    if media_group_id not in self.media_groups:
-                        self.media_groups[media_group_id] = {
-                            'messages': [],
-                            'task': None
-                        }
-                        self.media_groups[media_group_id]['task'] = asyncio.create_task(
-                            self.process_group(media_group_id, context, source_id, dest_id)
-                        )
-                    
-                    self.media_groups[media_group_id]['messages'].append(msg)
-            else:
-                await self.forward_single(msg, context, source_id, dest_id)
-        except Exception as e:
-            logger.error(f"Update handling error: {e}")
-
-    async def process_group(self, group_id: str, context: ContextTypes.DEFAULT_TYPE, 
-                          source_id: int, dest_id: int):
-        await asyncio.sleep(self.delay)
+    async def process_media_group(self, media_group_id: str, context: ContextTypes.DEFAULT_TYPE):
+        await asyncio.sleep(self.MEDIA_GROUP_DELAY)
         
         async with self.lock:
-            if group_id not in self.media_groups:
+            if media_group_id not in self.media_groups:
                 return
 
             messages = sorted(
-                self.media_groups[group_id]['messages'],
+                self.media_groups[media_group_id]['messages'],
                 key=lambda x: x.message_id
             )
 
             try:
-                message_ids = [m.message_id for m in messages]
+                message_ids = [msg.message_id for msg in messages]
                 await context.bot.forward_messages(
-                    chat_id=dest_id,
-                    from_chat_id=source_id,
+                    chat_id=int(os.environ['TARGET_ID']),
+                    from_chat_id=int(os.environ['SOURCE_ID']),
                     message_ids=message_ids
                 )
-                logger.info(f"Forwarded group {group_id} with {len(message_ids)} messages")
+                logger.info(f"Forwarded media group {media_group_id} with {len(message_ids)} items")
             except Exception as e:
-                logger.error(f"Group processing error: {e}")
+                logger.error(f"Media group error: {str(e)}")
             finally:
-                if group_id in self.media_groups:
-                    del self.media_groups[group_id]
+                del self.media_groups[media_group_id]
 
-    async def forward_single(self, message, context, source_id, dest_id):
+class TelegramBot:
+    def __init__(self):
+        self.media_manager = MediaGroupManager()
+        self.port = int(os.environ.get('PORT', 5000))
+        self.app = None
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if update.channel_post:
+                if update.channel_post.media_group_id:
+                    await self.media_manager.handle_media_group(update, context)
+                else:
+                    await self.forward_single_message(update.channel_post, context)
+        except Exception as e:
+            logger.error(f"Error handling message: {str(e)}")
+
+    async def forward_single_message(self, message, context):
         try:
             await context.bot.forward_message(
-                chat_id=dest_id,
-                from_chat_id=source_id,
+                chat_id=int(os.environ['TARGET_ID']),
+                from_chat_id=int(os.environ['SOURCE_ID']),
                 message_id=message.message_id
             )
-            logger.info(f"Forwarded message {message.message_id}")
+            logger.info("Forwarded single message")
         except Exception as e:
-            logger.error(f"Single message error: {e}")
+            logger.error(f"Forward error: {str(e)}")
 
     async def web_server(self):
-        try:
-            app = web.Application()
-            app.router.add_get("/", self.health_check)
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, host="0.0.0.0", port=self.port)
-            await site.start()
-            logger.info(f"Web server started on port {self.port}")
-            return runner
-        except Exception as e:
-            logger.error(f"Web server failed: {e}")
-            raise
+        app = web.Application()
+        app.router.add_get('/', self.health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', self.port)
+        await site.start()
+        return app
 
     async def health_check(self, request):
-        return web.Response(text="OK")
+        return web.Response(text="Bot is operational")
 
-    async def run(self):
-        try:
-            # Initialize Telegram bot
-            self.application = ApplicationBuilder().token(os.environ["BOT_TOKEN"]).build()
-            self.application.add_handler(MessageHandler(filters.ALL, self.handle_update))
-            
-            # Start web server first
-            runner = await self.web_server()
-            
-            # Start bot polling
-            await self.application.initialize()
-            await self.application.start()
-            logger.info("Bot initialized")
-            
-            # Keep running
-            while True:
-                await asyncio.sleep(3600)
-                
-        except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            await self.shutdown(runner)
-            
-    async def shutdown(self, runner):
-        try:
-            await self.application.stop()
-            await self.application.shutdown()
-            await runner.cleanup()
-            logger.info("Clean shutdown completed")
-        except Exception as e:
-            logger.error(f"Shutdown error: {e}")
+    async def start_bot(self):
+        # Validate environment variables
+        required_vars = ['BOT_TOKEN', 'SOURCE_ID', 'TARGET_ID']
+        missing = [var for var in required_vars if not os.environ.get(var)]
+        if missing:
+            raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+
+        # Start web server
+        await self.web_server()
+        
+        # Initialize Telegram bot
+        application = ApplicationBuilder().token(os.environ['BOT_TOKEN']).build()
+        application.add_handler(MessageHandler(filters.ALL, self.handle_message))
+        
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+
+        logger.info("Bot started successfully")
+        await asyncio.Future()  # Run forever
 
 if __name__ == '__main__':
-    bot = BotServer()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    bot = TelegramBot()
+    
     try:
-        loop.run_until_complete(bot.run())
+        asyncio.run(bot.start_bot())
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
-    finally:
-        loop.close()
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
