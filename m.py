@@ -8,6 +8,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 class MediaGroupForwarder:
     def __init__(self):
@@ -55,17 +56,14 @@ class MediaGroupForwarder:
 
             try:
                 message_ids = [m.message_id for m in messages]
-                
-                # Batch forward using Telegram's bulk forwarding
                 await context.bot.forward_messages(
                     chat_id=dest_id,
                     from_chat_id=source_id,
                     message_ids=message_ids
                 )
-                
-                logging.info(f"Forwarded media group {group_id} with {len(message_ids)} items")
+                logger.info(f"Forwarded media group {group_id} with {len(message_ids)} items")
             except Exception as e:
-                logging.error(f"Media group error: {e}")
+                logger.error(f"Media group error: {e}")
             finally:
                 del self.media_groups[group_id]
 
@@ -77,40 +75,38 @@ class MediaGroupForwarder:
                 message_id=message.message_id
             )
         except Exception as e:
-            logging.error(f"Forward error: {e}")
+            logger.error(f"Forward error: {e}")
 
-# Simple HTTP handler for Render health checks
-async def health_check_server():
+async def http_server():
     async def handler(reader, writer):
         data = await reader.read(1024)
         writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK')
         await writer.drain()
         writer.close()
-    
+
     port = int(os.environ.get("PORT", 8000))
     server = await asyncio.start_server(handler, '0.0.0.0', port)
+    logger.info(f"HTTP server running on port {port}")
     async with server:
         await server.serve_forever()
 
 async def main():
-    # Initialize components
     forwarder = MediaGroupForwarder()
+    
     application = ApplicationBuilder().token('7909869778:AAFj7OEWQFvkw8kYIlN5gFEa7l1hzEkyRQ0').build()
     application.add_handler(MessageHandler(filters.ALL, forwarder.handle_update))
 
-    # Create tasks for both bot and health check server
+    # Create tasks for both services
+    http_task = asyncio.create_task(http_server())
     bot_task = asyncio.create_task(application.run_polling())
-    server_task = asyncio.create_task(health_check_server())
 
-    # Run both tasks concurrently
-    await asyncio.gather(bot_task, server_task)
+    # Wait for both tasks (this will run forever until one crashes)
+    await asyncio.gather(http_task, bot_task)
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Bot shutdown requested")
+        logger.info("Bot shutdown by user")
     except Exception as e:
-        logging.error(f"Fatal error: {e}")
-    finally:
-        logging.info("Application shutdown complete")
+        logger.error(f"Fatal error: {e}")
